@@ -1,0 +1,118 @@
+import UIKit
+import UserNotifications
+
+@main
+class AppDelegate: UIResponder, UIApplicationDelegate {
+
+    var window: UIWindow?
+    private var notificationStream: AsyncStream<[AnyHashable: Any]>?
+    private let notificationQueue = DispatchQueue(label: "com.example.notificationQueue", qos: .userInitiated)
+
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        UNUserNotificationCenter.current().delegate = self
+        registerForPushNotifications()
+
+        // Initialize the notification stream
+        notificationStream = AsyncStream { continuation in
+            NotificationCenter.default.addObserver(forName: .newPushNotification, object: nil, queue: .main) { notification in
+                if let userInfo = notification.userInfo as? [AnyHashable: Any] {
+                    continuation.yield(userInfo)
+                }
+            }
+        }
+
+        // Start processing the stream
+        Task {
+            await processNotificationStream()
+        }
+
+        return true
+    }
+
+    func registerForPushNotifications() {
+        UNUserNotificationCenter.current()
+            .requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+                print("Permission granted: \(granted)")
+                guard granted else { return }
+                self.getNotificationSettings()
+            }
+    }
+
+    func getNotificationSettings() {
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            guard settings.authorizationStatus == .authorized else { return }
+            DispatchQueue.main.async {
+                UIApplication.shared.registerForRemoteNotifications()
+            }
+        }
+    }
+
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        // Forward the token to your server or FCM
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        print("Failed to register: \(error)")
+    }
+
+    func processNotificationStream() async {
+        guard let notificationStream = notificationStream else { return }
+        for await userInfo in notificationStream {
+            await handleNotification(userInfo: userInfo)
+        }
+    }
+
+    func handleNotification(userInfo: [AnyHashable: Any]) async {
+        guard let deepLink = userInfo["deep_link"] as? String else { return }
+        await navigateToDeepLink(deepLink: deepLink)
+    }
+    
+    func navigateToDeepLink(deepLink: String) async {
+        // Synchronize navigation using the notification queue
+        await notificationQueue.sync {
+            // Assuming your app uses a UINavigationController
+            guard let rootViewController = window?.rootViewController as? UINavigationController else { return }
+            
+            // Parse the deep link and navigate accordingly
+            if deepLink == "example://section1" {
+                let viewController = Section1ViewController()
+                rootViewController.pushViewController(viewController, animated: true)
+            } else if deepLink == "example://section2" {
+                let viewController = Section2ViewController()
+                rootViewController.pushViewController(viewController, animated: true)
+            }
+            // Add more cases as needed
+        }
+    }
+}
+
+extension Notification.Name {
+    static let newPushNotification = Notification.Name("newPushNotification")
+}
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        // Handle foreground notification
+        completionHandler([.alert, .sound, .badge])
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        let userInfo = response.notification.request.content.userInfo
+        NotificationCenter.default.post(name: .newPushNotification, object: nil, userInfo: userInfo)
+        completionHandler()
+    }
+}
+
+/*
+Explanation:
+Serial Dispatch Queue for Notification Handling:
+
+A notificationQueue is created to handle notification-related tasks serially, ensuring no race conditions.
+Async Handling:
+
+The navigateToDeepLink function is updated to run synchronously on the notificationQueue, ensuring one deep link navigation is completed before another starts.
+Notification Posting:
+
+Notifications are posted using NotificationCenter, and the notification payload is yielded into the AsyncStream.
+By implementing these changes, you can ensure that notifications are handled correctly and in sequence, preventing the wrong deep link from being opened.
+*/
